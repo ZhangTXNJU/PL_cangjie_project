@@ -1,6 +1,7 @@
 package cjcj.executor
 
 import std.deriving.Derive
+import cjcj.memory_abstraction.ObjectID
 
 // This is a very simple representation of values in the interpreter.
 // You may need to extend or modify it depending on your design.
@@ -11,6 +12,7 @@ public enum Value {
     | VString(String)
     | VBoolean(Bool)
     | VUnit
+    | VObject(ObjectID)
 
     public func toValueString(): String {
         match (this) {
@@ -18,6 +20,7 @@ public enum Value {
             case VString(s) => return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
             case VBoolean(b) => return b.toString()
             case VUnit => return "()"
+            case VObject(id) => return "<object@${id.id}>"
         }
     }
 
@@ -32,5 +35,8 @@ public enum Value {
     }
     static func from(_: Unit): Value {
         VUnit
+    }
+    static func from(id: ObjectID): Value {
+        VObject(id)
     }
 }

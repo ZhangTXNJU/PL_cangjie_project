@@ -3,7 +3,9 @@ package cjcj.executor
 import cjcj.visitor.*
 import cjcj.scanner.TokenKind
 import cjcj.scanner.Token
+import cjcj.memory_abstraction.{ObjectID, memory}
 import std.convert.*
+import std.collection.HashMap
 
 class Lab1TodoException <: Exception {
     public init(message: String) {
@@ -20,14 +22,21 @@ class Lab1TodoException <: Exception {
  * You may need to modify the member variables and/or generic parameters of the Evaluator class.
  */
 public open class Evaluator <: Visitor<Value> {
-    // How do you get and set the context when executing an expression?
-    // You might need to add some member variables to do this.
-    //
-    // private let context = ...
-    // private let static_scope = ...
+    private let objectStore_: ObjectStore
+    private let globalEnvironment_: HashMap<String, Value>
 
-    public open override func visit(_: Program): Value {
-        throw UnsupportedException("Unimplemented method for Visitor : Program")
+    public init() {
+        objectStore_ = ObjectStore()
+        globalEnvironment_ = HashMap<String, Value>()
+    }
+
+    public open override func visit(program: Program): Value {
+        // Execute all declarations
+        for (decl in program.decls) {
+            decl.traverse(this)
+        }
+        // Return unit value
+        Value.from(())
     }
 
     // This is just an example of how to implement the visit method for BinaryExpr.
@@ -42,6 +51,42 @@ public open class Evaluator <: Visitor<Value> {
                     case (VString(a), VString(b)) => Value.from(a + b)
                     case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.ADD_TYPE_MISMATCH,
                         "cannot add left = ${left}, right = ${right}", expr)
+                }
+                case TokenKind.SUB => match ((left, right)) {
+                    case (VInteger(a), VInteger(b)) => Value.from(a - b)
+                    case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.SUB_TYPE_MISMATCH,
+                        "cannot subtract left = ${left}, right = ${right}", expr)
+                }
+                case TokenKind.MUL => match ((left, right)) {
+                    case (VInteger(a), VInteger(b)) => Value.from(a * b)
+                    case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.MUL_TYPE_MISMATCH,
+                        "cannot multiply left = ${left}, right = ${right}", expr)
+                }
+                case TokenKind.DIV => match ((left, right)) {
+                    case (VInteger(a), VInteger(b)) =>
+                        if (b == 0) {
+                            throw CjcjRuntimeErrorWithLocation(ErrorCode.DIV_BY_ZERO,
+                                "division by zero", expr)
+                        } else {
+                            Value.from(a / b)
+                        }
+                    case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.DIV_TYPE_MISMATCH,
+                        "cannot divide left = ${left}, right = ${right}", expr)
+                }
+                case TokenKind.EXP => match ((left, right)) {
+                    case (VInteger(a), VInteger(b)) =>
+                        if (b < 0) {
+                            throw CjcjRuntimeErrorWithLocation(ErrorCode.EXP_NEGATIVE_POWER,
+                                "negative exponent not supported", expr)
+                        } else {
+                            var result: Int64 = 1
+                            for (i in 0..b) {
+                                result *= a
+                            }
+                            Value.from(result)
+                        }
+                    case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.EXP_TYPE_MISMATCH,
+                        "cannot exponentiate left = ${left}, right = ${right}", expr)
                 }
                 case _ => throw Lab1TodoException("Unimplemented Binary Operator `${expr.oper.kind}`")
             }
@@ -65,16 +110,50 @@ public open class Evaluator <: Visitor<Value> {
     public open override func visit(lit: LitConstExpr): Value {
         match (lit.literal.kind) {
             case TokenKind.INTEGER_LITERAL => Value.from(Int64.parse(lit.literal.value))
-            case _ => throw Lab1TodoException("There are more literal types to implement")
+            case TokenKind.STRING_LITERAL =>
+                // Remove quotes from string literal
+                let strVal = lit.literal.value
+                let content = strVal[1..strVal.size - 1]
+                Value.from(content)
+            case TokenKind.BOOL_LITERAL =>
+                match (lit.literal.value) {
+                    case "true" => Value.from(true)
+                    case "false" => Value.from(false)
+                    case _ => throw Lab1TodoException("Invalid boolean literal")
+                }
+            case TokenKind.UNIT_LITERAL => Value.from(())
+            case _ => throw Lab1TodoException("Unsupported literal type: ${lit.literal.kind}")
         }
     }
 
     public open override func visit(expr: AssignExpr): Value {
-        throw Lab1TodoException("Assignment Expression Evaluation Not Implemented")
+        // Evaluate the right-hand side
+        let value = expr.right.traverse(this)
+
+        // The left side should be a reference expression
+        if (expr.left is RefExpr) {
+            let refExpr = (expr.left as RefExpr).getOrThrow()
+            let varName = refExpr.identifier.value
+
+            // Store in global environment
+            globalEnvironment_[varName] = value
+            return value
+        } else {
+            throw CjcjRuntimeErrorWithLocation(ErrorCode.INVALID_ASSIGNMENT,
+                "Left side of assignment must be a variable reference", expr)
+        }
     }
 
     public open override func visit(ref: RefExpr): Value {
-        throw Lab1TodoException("Reference Expression Evaluation Not Implemented")
+        let varName = ref.identifier.value
+
+        // Look up in global environment
+        if (let Some(value) <- globalEnvironment_.get(varName)) {
+            return value
+        } else {
+            throw CjcjRuntimeErrorWithLocation(ErrorCode.UNDEFINED_VAR,
+                "Undefined variable: ${varName}", ref)
+        }
     }
 
     public open override func visit(block: Block): Value {
@@ -106,7 +185,19 @@ public open class Evaluator <: Visitor<Value> {
     }
 
     public open override func visit(decl: VarDecl): Value {
-        throw Lab1TodoException("Variable Declaration Evaluation Not Implemented")
+        let varName = decl.identifier.value
+
+        // Evaluate initializer if present
+        var value = Value.from(())
+        match (decl.initializer) {
+            case Some(initExpr) => value = initExpr.traverse(this)
+            case None => {}
+        }
+
+        // Store in global environment
+        globalEnvironment_[varName] = value
+
+        return value
     }
 
     public open override func visit(_: FuncParam): Value {
@@ -117,16 +208,20 @@ public open class Evaluator <: Visitor<Value> {
         throw UnsupportedException("Unimplemented method for Visitor : Function Declaration")
     }
 
-    public open override func visit(_: MainDecl): Value {
-        throw UnsupportedException("Unimplemented method for Visitor : Main Declaration")
+    public open override func visit(mainDecl: MainDecl): Value {
+        return mainDecl.block.traverse(this)
     }
 
     public open override func visit(_: ClassDecl): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Class Declaration")
     }
 
-    public open override func visit(_: Body): Value {
-        throw UnsupportedException("Unimplemented method for Visitor : Body")
+    public open override func visit(body: Body): Value {
+        var result = Value.from(())
+        for (node in body.decls) {
+            result = node.traverse(this)
+        }
+        return result
     }
 
     public open override func visit(arg: Argument): Value {
