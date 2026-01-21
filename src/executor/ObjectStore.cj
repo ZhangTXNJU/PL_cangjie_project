@@ -14,7 +14,7 @@ public class ObjectStore {
     }
 
     public func createObject(objectId: ObjectID, instance: ObjectInstance): Unit {
-        objects_.put(objectId, instance)
+        objects_[objectId] = instance
     }
 
     public func getObject(objectId: ObjectID): ?ObjectInstance {

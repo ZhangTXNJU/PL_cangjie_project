@@ -2,7 +2,7 @@ package cjcj.memory_abstraction
 
 import std.deriving.Derive
 
-@Derive[Hashable, Equatable]
+@Derive[Hashable, Equatable, ToString]
 public struct ObjectID {
     public let id: UInt64
 

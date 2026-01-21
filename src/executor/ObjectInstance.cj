@@ -1,7 +1,7 @@
 package cjcj.executor
 
 import cjcj.memory_abstraction.ObjectID
-import cjcj.visitor.{TypeNode, ClassDecl}
+import cjcj.visitor.ClassDecl
 import std.collection.HashMap
 
 /**
@@ -9,10 +9,10 @@ import std.collection.HashMap
  */
 public class ObjectInstance {
     private let objectId_: ObjectID
-    private let classDecl_: ClassDecl
+    private let classDecl_: ?ClassDecl
     private let fields_: HashMap<String, Value>
 
-    public init(objectId: ObjectID, classDecl: ClassDecl) {
+    public init(objectId: ObjectID, classDecl: ?ClassDecl) {
         objectId_ = objectId
         classDecl_ = classDecl
         fields_ = HashMap<String, Value>()
@@ -24,7 +24,7 @@ public class ObjectInstance {
         }
     }
 
-    public prop classDecl: ClassDecl {
+    public prop classDecl: ?ClassDecl {
         get() {
             classDecl_
         }
@@ -35,11 +35,14 @@ public class ObjectInstance {
     }
 
     public func setField(name: String, value: Value): Unit {
-        fields_.put(name, value)
+        fields_[name] = value
     }
 
     public func hasField(name: String): Bool {
-        fields_.containsKey(name)
+        match (fields_.get(name)) {
+            case Some(_) => true
+            case None => false
+        }
     }
 
     public prop fields: HashMap<String, Value> {

@@ -37,7 +37,15 @@ public class Executor {
 
     public func typeCheck(program: Program): Int64 {
         try {
-            // TODO
+            let typeChecker = TypeChecker()
+            let errors = typeChecker.typeCheck(program)
+
+            if (errors.size > 0) {
+                for (error in errors) {
+                    eprintln("Type error: ${error}")
+                }
+                return 1
+            }
             0
         } catch (e: CjcjRuntimeErrorWithLocation) {
             eprintln(e)

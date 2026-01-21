@@ -5,7 +5,7 @@ import cjcj.scanner.TokenKind
 import cjcj.scanner.Token
 import cjcj.memory_abstraction.{ObjectID, memory}
 import std.convert.*
-import std.collection.HashMap
+import std.collection.{HashMap, HashSet, ArrayList}
 
 class Lab1TodoException <: Exception {
     public init(message: String) {
@@ -30,7 +30,7 @@ public open class Evaluator <: Visitor<Value> {
         globalEnvironment_ = HashMap<String, Value>()
     }
 
-    public open override func visit(program: Program): Value {
+    public override func visit(program: Program): Value {
         // Execute all declarations
         for (decl in program.decls) {
             decl.traverse(this)
@@ -41,7 +41,7 @@ public open class Evaluator <: Visitor<Value> {
 
     // This is just an example of how to implement the visit method for BinaryExpr.
     // You may need to modify, split, or completely rewrite it depending on your design.
-    public open override func visit(expr: BinaryExpr): Value {
+    public override func visit(expr: BinaryExpr): Value {
         let left = expr.left.traverse(this)
         let right = expr.right.traverse(this)
         try {
@@ -99,15 +99,29 @@ public open class Evaluator <: Visitor<Value> {
         }
     }
 
-    public open override func visit(expr: UnaryExpr): Value {
-        throw Lab1TodoException("Unary Expression Evaluation Not Implemented")
+    public override func visit(expr: UnaryExpr): Value {
+        let right = expr.right.traverse(this)
+
+        match (expr.oper.kind) {
+            case TokenKind.SUB => match (right) {
+                case VInteger(i) => Value.from(-i)
+                case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.NEG_TYPE_MISMATCH,
+                    "Cannot negate non-integer value", expr)
+            }
+            case TokenKind.NOT => match (right) {
+                case VBoolean(b) => Value.from(!b)
+                case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.NOT_TYPE_MISMATCH,
+                    "Cannot apply '!' to non-boolean value", expr)
+            }
+            case _ => throw Lab1TodoException("Unsupported unary operator: ${expr.oper.kind}")
+        }
     }
 
-    public open override func visit(par: ParenExpr): Value {
-        throw Lab1TodoException("Parenthesized Expression Evaluation Not Implemented")
+    public override func visit(par: ParenExpr): Value {
+        return par.parenthesizedExpr.traverse(this)
     }
 
-    public open override func visit(lit: LitConstExpr): Value {
+    public override func visit(lit: LitConstExpr): Value {
         match (lit.literal.kind) {
             case TokenKind.INTEGER_LITERAL => Value.from(Int64.parse(lit.literal.value))
             case TokenKind.STRING_LITERAL =>
@@ -126,7 +140,7 @@ public open class Evaluator <: Visitor<Value> {
         }
     }
 
-    public open override func visit(expr: AssignExpr): Value {
+    public override func visit(expr: AssignExpr): Value {
         // Evaluate the right-hand side
         let value = expr.right.traverse(this)
 
@@ -138,25 +152,25 @@ public open class Evaluator <: Visitor<Value> {
             // Store in global environment
             globalEnvironment_[varName] = value
             return value
+            return value
         } else {
-            throw CjcjRuntimeErrorWithLocation(ErrorCode.INVALID_ASSIGNMENT,
+            throw CjcjRuntimeErrorWithLocation(ErrorCode.ASSIGN_TYPE_MISMATCH,
                 "Left side of assignment must be a variable reference", expr)
         }
     }
 
-    public open override func visit(ref: RefExpr): Value {
+    public override func visit(ref: RefExpr): Value {
         let varName = ref.identifier.value
 
         // Look up in global environment
-        if (let Some(value) <- globalEnvironment_.get(varName)) {
-            return value
-        } else {
-            throw CjcjRuntimeErrorWithLocation(ErrorCode.UNDEFINED_VAR,
+        match (globalEnvironment_.get(varName)) {
+            case Some(value) => return value
+            case None => throw CjcjRuntimeErrorWithLocation(ErrorCode.UNDEFINED_VAR,
                 "Undefined variable: ${varName}", ref)
         }
     }
 
-    public open override func visit(block: Block): Value {
+    public override func visit(block: Block): Value {
         var ret = Value.VUnit
         for (stmt in block.nodes.iterator()) {
             ret = stmt.traverse(this)
@@ -164,34 +178,94 @@ public open class Evaluator <: Visitor<Value> {
         return ret
     }
 
-    public open override func visit(expr: IfExpr): Value {
-        throw Lab1TodoException("If Expression Evaluation Not Implemented")
+    public override func visit(expr: IfExpr): Value {
+        let condition = expr.condition.traverse(this)
+
+        match (condition) {
+            case VBoolean(true) => return expr.ifBlock.traverse(this)
+            case VBoolean(false) => return expr.elseBranch.traverse(this)
+            case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.IF_TYPE_MISMATCH,
+                "If condition must be boolean", expr)
+        }
     }
 
-    public open override func visit(expr: WhileExpr): Value {
-        throw Lab1TodoException("While Expression Evaluation Not Implemented")
+    public override func visit(expr: WhileExpr): Value {
+        var result = Value.from(())
+
+        while (true) {
+            let condition = expr.condition.traverse(this)
+            match (condition) {
+                case VBoolean(true) => result = expr.block.traverse(this)
+                case VBoolean(false) => break
+                case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.WHILE_TYPE_MISMATCH,
+                    "While condition must be boolean", expr)
+            }
+        }
+
+        return result
     }
 
-    public open override func visit(call: CallExpr): Value {
-        throw UnsupportedException("Unimplemented method for Visitor : Call Expression")
+    public override func visit(call: CallExpr): Value {
+        // Check if it's a built-in function call
+        if (call.callee is RefExpr) {
+            let refExpr = (call.callee as RefExpr).getOrThrow()
+            let funcName = refExpr.identifier.value
+
+            if (funcName == "gc") {
+                // Built-in gc() function
+                performGarbageCollection()
+                return Value.from(())
+            } else if (funcName == "refEq") {
+                // Built-in refEq() function
+                if (call.arguments.size != 2) {
+                    throw CjcjRuntimeErrorWithLocation(ErrorCode.CALL_ARG_COUNT_MISMATCH,
+                        "refEq expects 2 arguments", call)
+                }
+                let arg1 = call.arguments[0].expr.traverse(this)
+                let arg2 = call.arguments[1].expr.traverse(this)
+
+                match ((arg1, arg2)) {
+                    case (VObject(id1), VObject(id2)) => return Value.from(id1 == id2)
+                    case _ => return Value.from(false)
+                }
+            } else if (funcName == "panic") {
+                // Built-in panic() function
+                if (call.arguments.size != 1) {
+                    throw CjcjRuntimeErrorWithLocation(ErrorCode.CALL_ARG_COUNT_MISMATCH,
+                        "panic expects 1 argument", call)
+                }
+                let arg = call.arguments[0].expr.traverse(this)
+                match (arg) {
+                    case VString(msg) => throw CjcjRuntimeErrorWithLocation(ErrorCode.CALL_ARG_TYPE_MISMATCH, msg, call)
+                    case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.CALL_ARG_TYPE_MISMATCH, "panic", call)
+                }
+            } else {
+                // Check if it's a constructor call (class name)
+                let objectId = createObject(funcName)
+                return Value.from(objectId)
+            }
+        } else {
+            throw CjcjRuntimeErrorWithLocation(ErrorCode.CALLEE_NOT_FUNCTION,
+                "Cannot call non-function value", call)
+        }
     }
 
-    public open override func visit(_: ReturnExpr): Value {
+    public override func visit(_: ReturnExpr): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Return Expression")
     }
 
-    public open override func visit(jmp: JumpExpr): Value {
+    public override func visit(jmp: JumpExpr): Value {
         throw Lab1TodoException("Jump Expression Evaluation Not Implemented")
     }
 
-    public open override func visit(decl: VarDecl): Value {
+    public override func visit(decl: VarDecl): Value {
         let varName = decl.identifier.value
 
         // Evaluate initializer if present
         var value = Value.from(())
         match (decl.initializer) {
             case Some(initExpr) => value = initExpr.traverse(this)
-            case None => {}
+            case None => value = value
         }
 
         // Store in global environment
@@ -200,23 +274,24 @@ public open class Evaluator <: Visitor<Value> {
         return value
     }
 
-    public open override func visit(_: FuncParam): Value {
+    public override func visit(_: FuncParam): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Function Paramters")
     }
 
-    public open override func visit(_: FuncDecl): Value {
+    public override func visit(_: FuncDecl): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Function Declaration")
     }
 
-    public open override func visit(mainDecl: MainDecl): Value {
+    public override func visit(mainDecl: MainDecl): Value {
         return mainDecl.block.traverse(this)
     }
 
-    public open override func visit(_: ClassDecl): Value {
-        throw UnsupportedException("Unimplemented method for Visitor : Class Declaration")
+    public override func visit(classDecl: ClassDecl): Value {
+        // Class declarations are processed at compile time, just return unit
+        return Value.from(())
     }
 
-    public open override func visit(body: Body): Value {
+    public override func visit(body: Body): Value {
         var result = Value.from(())
         for (node in body.decls) {
             result = node.traverse(this)
@@ -224,91 +299,171 @@ public open class Evaluator <: Visitor<Value> {
         return result
     }
 
-    public open override func visit(arg: Argument): Value {
+    public override func visit(arg: Argument): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Argument")
     }
 
-    public open override func visit(_: TypeNode): Value {
+    public override func visit(_: TypeNode): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Type Node")
     }
 
-    public open override func visit(_: PrimitiveType): Value {
+    public override func visit(_: PrimitiveType): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Primitive Types")
     }
 
-    public open override func visit(_: RefType): Value {
+    public override func visit(_: RefType): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Reference Type")
     }
 
-    public open override func visit(_: VariableReference): Value {
+    public override func visit(_: VariableReference): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Variable Reference (ASG)")
     }
 
-    public open override func visit(_: FuncReference): Value {
+    public override func visit(_: FuncReference): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Function Reference (ASG)")
     }
 
-    public open override func visit(_: ClassReference): Value {
+    public override func visit(_: ClassReference): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Class Reference (ASG)")
     }
 
-    public open override func visit(_: VarDeclWithRef): Value {
+    public override func visit(_: VarDeclWithRef): Value {
         throw UnsupportedException(
             "Unimplemented method for Visitor : Variable Declaration with" + "References Stored (ASG)")
     }
 
-    public open override func visit(_: FuncDeclWithRef): Value {
+    public override func visit(_: FuncDeclWithRef): Value {
         throw UnsupportedException(
             "Unimplemented method for Visitor : Function Declaration with" + "References Stored (ASG)")
     }
 
-    public open override func visit(_: MainDeclWithRef): Value {
+    public override func visit(_: MainDeclWithRef): Value {
         throw UnsupportedException(
             "Unimplemented method for Visitor : Main Declaration with" + "References Stored (ASG)")
     }
 
-    public open override func visit(_: ClassDeclWithRef): Value {
+    public override func visit(_: ClassDeclWithRef): Value {
         throw UnsupportedException(
             "Unimplemented method for Visitor : Class Declaration with" + "References Stored (ASG)")
     }
 
-    public open override func visit(_: MemberAccess): Value {
-        throw UnsupportedException("Unimplemented method for Visitor : Member Access")
+    public override func visit(memberAccess: MemberAccess): Value {
+        // Evaluate the base object
+        let baseValue = memberAccess.baseExpr.traverse(this)
+
+        match (baseValue) {
+            case VObject(objId) =>
+                // Access member of object
+                match (objectStore_.getObject(objId)) {
+                    case Some(obj) =>
+                        let memberName = memberAccess.field.value
+                        match (obj.getField(memberName)) {
+                            case Some(fieldValue) => fieldValue
+                            case None => throw CjcjRuntimeErrorWithLocation(ErrorCode.UNDEFINED_VAR,
+                                "Undefined field: ${memberName}", memberAccess)
+                        }
+                    case None => throw CjcjRuntimeErrorWithLocation(ErrorCode.UNDEFINED_VAR,
+                        "Object not found", memberAccess)
+                }
+            case _ => throw CjcjRuntimeErrorWithLocation(ErrorCode.UNDEFINED_VAR,
+                "Cannot access member of non-object value", memberAccess)
+        }
     }
 
-    public open override func visit(_: PrimitiveTypeExpr): Value {
+    public override func visit(_: PrimitiveTypeExpr): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Primitive type expression")
     }
 
-    public open override func visit(_: RefExprWithRef): Value {
+    public override func visit(_: RefExprWithRef): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Reference expression with reference")
     }
 
-    public open override func visit(_: ThisSuperExpr): Value {
+    public override func visit(_: ThisSuperExpr): Value {
         throw UnsupportedException("Unimplemented method for Visitor : This Super expression")
     }
 
-    public open override func visit(_: ThisSuperReference): Value {
+    public override func visit(_: ThisSuperReference): Value {
         throw UnsupportedException("Unimplemented method for Visitor : This Super reference")
     }
 
-    public open override func visit(_: CallExprWithRef): Value {
+    public override func visit(_: CallExprWithRef): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Call expression with reference")
     }
 
-    public open override func visit(_: MemberAccessWithRef): Value {
+    public override func visit(_: MemberAccessWithRef): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Member access with reference")
     }
 
-    public open override func visit(_: InterfaceDecl): Value {
+    public override func visit(_: InterfaceDecl): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Interface Declaration")
     }
 
-    public open override func visit(_: InterfaceDeclWithRef): Value {
+    public override func visit(_: InterfaceDeclWithRef): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Interface Declaration with reference")
     }
 
-    public open override func visit(_: InterfaceReference): Value {
+    public override func visit(_: InterfaceReference): Value {
         throw UnsupportedException("Unimplemented method for Visitor : Interface Reference")
+    }
+
+    private func createObject(className: String): ObjectID {
+        // For now, create a simple object with no fields
+        // In a full implementation, we would look up the class declaration
+        // and allocate memory for all fields
+        let objectId = memory.allocate(Object(), 0, 0)
+        let instance = ObjectInstance(objectId, None) // Simplified for now
+        objectStore_.createObject(objectId, instance)
+        return objectId
+    }
+
+    private func performGarbageCollection(): Unit {
+        // Simple mark-and-sweep garbage collection
+        memory.onGCBegin()
+
+        // Mark phase: mark all reachable objects
+        let marked = HashSet<ObjectID>()
+
+        // Mark objects in global environment
+        for (value in globalEnvironment_.values()) {
+            markObject(value, marked)
+        }
+
+        // Sweep phase: collect unmarked objects
+        let allObjects = objectStore_.allObjects
+        let toRemove = ArrayList<ObjectID>()
+
+        for (objId in allObjects.keys()) {
+            if (!marked.contains(objId)) {
+                toRemove.add(objId)
+            }
+        }
+
+        // Remove unreachable objects
+        for (objId in toRemove) {
+            objectStore_.removeObject(objId)
+            memory.deallocate(objId)
+        }
+
+        memory.onGCEnd()
+    }
+
+    private func markObject(value: Value, marked: HashSet<ObjectID>): Unit {
+        match (value) {
+            case VObject(objId) =>
+                if (!marked.contains(objId)) {
+                    marked.add(objId)
+                    // Mark all objects referenced by this object's fields
+                    match (objectStore_.getObject(objId)) {
+                        case Some(obj) =>
+                            for (fieldValue in obj.fields.values()) {
+                                markObject(fieldValue, marked)
+                            }
+                        case None => ()
+                    }
+                }
+            case _ =>
+                // Other values don't contain object references
+                ()
+        }
     }
 }
